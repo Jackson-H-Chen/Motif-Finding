@@ -11,9 +11,45 @@ parser.add_argument('--motifs', required=True, type=str,
 	metavar='<path>', help='file of motifs in MEME format')
 parser.add_argument('--fasta', required=True, type=str,
 	metavar='<path>', help='file of sequences in FASTA format')
-parser.add_argument('--fp_rate', required=False, type=float, default=1.0,
+parser.add_argument('--tolerance', required=False, type=float, default=0.9,
 	metavar='<float>', help='threshold [%(default).3f]')
 arg = parser.parse_args()
+
+SIM = {
+	'A': {'A':0.97, 'C':0.01, 'G':0.01, 'T':0.01},
+	'C': {'A':0.01, 'C':0.97, 'G':0.01, 'T':0.01},
+	'G': {'A':0.01, 'C':0.01, 'G':0.97, 'T':0.01},
+	'T': {'A':0.01, 'C':0.01, 'G':0.01, 'T':0.97},
+	'R': {'A':0.49, 'C':0.01, 'G':0.49, 'T':0.01},
+	'Y': {'A':0.01, 'C':0.49, 'G':0.01, 'T':0.49},
+	'M': {'A':0.49, 'C':0.49, 'G':0.01, 'T':0.01},
+	'K': {'A':0.01, 'C':0.01, 'G':0.49, 'T':0.49},
+	'W': {'A':0.49, 'C':0.01, 'G':0.01, 'T':0.49},
+	'S': {'A':0.01, 'C':0.49, 'G':0.49, 'T':0.01},
+	'B': {'A':0.01, 'C':0.33, 'G':0.33, 'T':0.33},
+	'D': {'A':0.33, 'C':0.01, 'G':0.33, 'T':0.33},
+	'H': {'A':0.33, 'C':0.33, 'G':0.01, 'T':0.33},
+	'V': {'A':0.33, 'C':0.33, 'G':0.33, 'T':0.01},
+	'N': {'A':0.25, 'C':0.25, 'G':0.25, 'T':0.25},
+}
+	
+REG = {
+	'A': 'A',
+	'C': 'C',
+	'G': 'G',
+	'T': 'T',
+	'R': '[AG]',
+	'Y': '[CT]',
+	'M': '[AC]',
+	'K': '[GT]',
+	'W': '[AT]',
+	'S': '[GC]',
+	'B': '[CGT]',
+	'D': '[AGT]',
+	'H': '[ACT]',
+	'V': '[ACG]',
+	'N': '.',
+}
 
 def read_motifs(file):
 	motifs = {}
@@ -58,8 +94,7 @@ def read_fasta(filename):
 	yield(name, ''.join(seqs))
 	fp.close()
 
-def search_seq(dna, pwm):
-	t = 1e-4
+def search_pwm(dna, pwm, t):
 	found = []
 	lp = len(pwm)
 	for i in range(len(dna) - lp + 1):
@@ -68,11 +103,15 @@ def search_seq(dna, pwm):
 		for j in range(len(seq)):
 			p *= pwm[j][seq[j]]
 		if p > t: found.append(i)
-	print(found)
-	sys.exit()
 	return found
 
-def site_freq(pwm, rate):
+def search_re(dna, rst):
+	found = []
+	for match in re.finditer(rst, dna):
+		found.append(match.start())
+	return found
+
+def motif_entropy(pwm):
 	sum_H = 0
 	for i in range(len(pwm)):
 		h = 0
@@ -82,18 +121,47 @@ def site_freq(pwm, rate):
 			elif pwm[i][nt] != 0:
 				h -= pwm[i][nt] * math.log2(pwm[i][nt])
 		sum_H += h
-	return 1 / 2 ** sum_H
+	return sum_H
 
-mdb = read_motifs(arg.motifs)
-for name, seq in read_fasta(arg.fasta):
-	match = re.search('^(\S+)', name)
-	id = match[1]
-	for mid in mdb:
-		f = site_freq(mdb[mid], arg.fp_rate)
-		t = f * 1000
-		print(mid, f, t)
-	#	motifs = search_seq(seq, mdb[mid])
-	#sys.exit()
+def dkl(p, q):
+	d = 0
+	for i in p:
+		if p[i] != 0:
+			d += p[i] * math.log2(p[i]/q[i])
+	return d
+
+def make_regex(pwm):
+	ntstr = ''
+	restr = ''
+	for i in range(len(pwm)):
+		min_d = 1e6
+		min_nt = None
+		for nt in SIM:
+			d = dkl(pwm[i], SIM[nt])
+			if d < min_d:
+				min_d = d
+				min_nt = nt
+		ntstr += min_nt
+		restr += REG[min_nt]
+	
+	return restr, ntstr
+
+
+if __name__ == '__main__':
+	motifs = read_motifs(arg.motifs)
+	for name, seq in read_fasta(arg.fasta):
+		match = re.search('^(\S+)', name)
+		id = match[1]
+		for mid in motifs:
+			pwm = motifs[mid]
+			h = motif_entropy(pwm)
+			rst, nst = make_regex(pwm)
+			freq = 1 / 2 ** h
+			tol = arg.tolerance ** len(pwm)
+			t = freq * tol
+			pwm_sites = search_pwm(seq, pwm, t)
+			re_sites = search_re(seq, rst)
+			print(mid, nst, 'regex', re_sites, 'pwm', pwm_sites)
 
 
 
